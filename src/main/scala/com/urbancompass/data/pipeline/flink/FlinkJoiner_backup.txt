@@ -1,0 +1,702 @@
+2019-07-22
+package com.urbancompass.data.pipeline.flink
+
+import java.util
+import java.util.Properties
+import java.sql.Timestamp
+
+
+import org.apache.flink.api.java.utils.ParameterTool
+import org.apache.flink.api.scala._
+import org.apache.flink.streaming.api.scala.{DataStream, StreamExecutionEnvironment}
+import org.apache.flink.api.common.serialization.{SimpleStringSchema, AbstractDeserializationSchema}
+import org.apache.flink.streaming.connectors.kafka.{FlinkKafkaConsumer, FlinkKafkaProducer}
+import org.apache.flink.streaming.connectors.kafka
+
+import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchema
+import org.apache.flink.streaming.api.TimeCharacteristic
+import org.apache.flink.api.scala._
+import org.apache.flink.table.api.scala._
+import org.apache.flink.table.descriptors.{Json, Kafka, Rowtime, Schema}
+import org.apache.flink.types.Row
+import org.apache.flink.table.api.{TableEnvironment, Types}
+import org.apache.flink.table.functions.TemporalTableFunction
+import org.apache.flink.runtime.state.filesystem.FsStateBackend
+import org.apache.flink.table.sources.tsextractors.{ExistingField}
+import scala.collection.mutable
+import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor
+import org.apache.flink.streaming.api.windowing.time.Time
+import org.apache.flink.api.java.typeutils.RowTypeInfo
+import org.apache.flink.streaming.util.serialization.JSONKeyValueDeserializationSchema
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.node.ObjectNode
+import org.apache.flink.formats.avro.AvroDeserializationSchema
+import org.apache.avro.generic.GenericRecord
+import org.apache.avro.specific.SpecificDatumReader
+import org.apache.avro.io.DecoderFactory
+import com.fasterxml.jackson.databind.{ ObjectMapper, JsonNode }
+
+import com.sksamuel.avro4s.{AvroSchema, AvroName, AvroNamespace, AvroInputStream}
+
+object FlinkJoiner {
+
+  def main(args: Array[String]) {
+
+    /*
+    Set up Avro schema dynamically
+    Using avro4 https://github.com/sksamuel/avro4s#schemas
+
+     */
+    val messageSchema = """
+    {
+      "name": "pipeline_message",
+      "type": "record",
+      "namespace": "pipeline",
+      "fields": [
+      {"name": "trace_id", "type": "string"},
+      {"name": "data_version", "type": "string"},
+      {"name": "ts_created_at", "type": "string"},
+      {"name": "payload", "type": "string"},
+      ]
+    }
+    """
+    @AvroName("pipeline_message")
+    @AvroNamespace("pipeline")
+    case class kafkaData(trace_id: String, data_version: String, ts_created_at: String, payload: String)
+    val avroSchema = AvroSchema[kafkaData]
+    println("Avro Schema: " + avroSchema)
+
+
+
+    /*
+     Checking input parameters
+     */
+    val params = ParameterTool.fromArgs(args)
+    val bootstrapServers = params.getRequired("bootstrap-server")
+    val kafkaListingsTopic = params.getRequired("listings-topic")
+    val kafkaImagesTopic = params.getRequired("images-topic")
+    val kafkaJoinedTopic = params.getRequired("sink-topic")
+
+    /*
+     Set up environment
+     */
+    val env = StreamExecutionEnvironment.getExecutionEnvironment
+    val tEnv = TableEnvironment.getTableEnvironment(env)
+    //env.setStateBackend(new FsStateBackend("file:///home/azfar.aziz/flinkPOC/checkpoints"))
+    //env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
+    env.setStreamTimeCharacteristic(TimeCharacteristic.ProcessingTime)
+    env.setParallelism(1)
+    env.getConfig.enableForceAvro()
+    env.getConfig.disableForceKryo()
+
+    /*
+     Run on Mutable List
+     */
+    //runStaticDataStream()
+
+
+    /*
+     Set up Kafka details
+     */
+    val (consumerProps, producerProps) = getConsumerAndProducerProps(bootstrapServers)
+
+    // Serializers used for reading topics
+    val serdeSchema = new SimpleStringSchema
+    val jsonDeserdeSchema = new JSONKeyValueDeserializationSchema(true)
+
+    //val avroDeserdeSchema = AvroDeserializationSchema.forGeneric(avroSchema)
+    //val avroDeserdeSchema = new MyAvroDeserializationSchema[kafkaData](classOf[kafkaData])
+    //val deserializer = new KeyedDeserializationSchema[String](serdeSchema)
+
+    //val binaryDeserdeSchema = new AbstractDeserializationSchema[Array[Byte]](){
+     // override def deserialize(bytes: Array[Byte]): Array[Byte] = java.util.Base64.getDecoder.decode(bytes)
+    //}
+    //val binaryAvroDeserdeSchema = new BinaryAvroDeserializationSchema[GenericRecord](classOf[GenericRecord])
+
+    /*
+     Consumers
+     */
+    //val kafkaListingsConsumer = new FlinkKafkaConsumer(kafkaListingsTopic, binaryAvroDeserdeSchema, consumerProps)
+    //val kafkaListingsConsumer = new FlinkKafkaConsumer(kafkaListingsTopic, avroDeserdeSchema, consumerProps)
+    val kafkaListingsConsumer = new FlinkKafkaConsumer[ObjectNode](kafkaListingsTopic, jsonDeserdeSchema, consumerProps)
+    kafkaListingsConsumer.setStartFromEarliest()
+    //kafkaListingsConsumer.assignTimestampsAndWatermarks(new TimestampExtractor[GenericRecord]())
+
+    //val kafkaImagesConsumer = new FlinkKafkaConsumer[ObjectNode](kafkaImagesTopic, jsonDeserdeSchema, consumerProps)
+    //kafkaImagesConsumer.setStartFromEarliest()
+    //kafkaImagesConsumer.assignTimestampsAndWatermarks(new TimestampExtractor[ObjectNode]())
+
+    val rowListingType = new RowTypeInfo(
+      Types.STRING, // trace_id
+      Types.STRING, // data_version
+      Types.STRING, // ts_created_at
+      Types.STRING, // __raw_ingest_start_time__
+      Types.STRING, // __uc_id_sha__
+      Types.STRING, // Listing ID
+      Types.STRING, // Agent ID
+      Types.STRING // Office ID
+    )
+
+    def listingMapper(record: ObjectNode): Row = {
+      val obj = record.get("value")
+      val mapper = new ObjectMapper()
+      val payload = mapper.readTree(obj.get("payload").asText())
+      try {
+        return Row.of(
+          obj.get("trace_id").asText(),
+          obj.get("data_version").asText(),
+          obj.get("ts_created_at").asText(),
+          payload.get("__raw_ingest_start_time__").asText(),
+          payload.get("__uc_id_sha__").asText(),
+          payload.get("Listing ID").asText(),
+          payload.get("Agent ID").asText(),
+          payload.get("Office ID").asText()
+          //payload.get("ActiveAgent:Agent").get(0).get("Agent ID").asText()
+        )
+      }
+    }
+
+//    val rowImageType = new RowTypeInfo(Types.STRING, Types.STRING, Types.STRING, Types.SQL_TIMESTAMP)
+//
+//    def imageMapper(objectNode: ObjectNode): Row = {
+//      return Row.of(
+//        objectNode.get("value").get("image_id").asText()
+//        , objectNode.get("value").get("listing_id").asText()
+//        , objectNode.get("value").get("data").asText()
+//        , new Timestamp(objectNode.get("value").get("ts").asLong())
+//      )
+//    }
+//
+//    val rowCombinedImageType = new RowTypeInfo(Types.STRING, Types.STRING, Types.SQL_TIMESTAMP)
+
+    val listingsStream = env.addSource(kafkaListingsConsumer).map(x => listingMapper(x))(rowListingType)
+    val listingsTbl = tEnv.fromDataStream(listingsStream,
+      'trace_id,
+      'data_version,
+      'ts_created_at,
+      '__raw_ingest_start_time__,
+      '__uc_id_sha__,
+      'listing_id,
+      'agent_id,
+      'office_id,
+      'proctime.proctime
+    )
+    tEnv.registerTable("listings_tbl", listingsTbl)
+
+//    val ImagesStream = env
+//      .addSource(kafkaImagesConsumer).map(x => imageMapper(x))(rowImageType)
+//      .keyBy(1)
+//      .reduce((i1, i2) => Row.of(
+//                          i1.getField(0)
+//                          , i1.getField(1)
+//                          , (i1.getField(2).asInstanceOf[String] + i2.getField(2).asInstanceOf[String])
+//                          , i1.getField(3)
+//                          ))
+//
+//    val ImagesTbl = tEnv.fromDataStream(ImagesStream, 'listing_id, 'image_id, 'data, 'ts, 'proctime.proctime)
+//    tEnv.registerTable("images_tbl", ImagesTbl)
+//
+//    tEnv.registerFunction("Images", tEnv.scan("images_tbl").createTemporalTableFunction('proctime, 'listing_id))
+
+    /*
+     Query streams
+     */
+//    val sqlQueryImages = "select * from images_tbl"
+//    tEnv.registerTable("ImagesResult", tEnv.sqlQuery(sqlQueryImages))
+
+    val sqlQueryListings = "select * from listings_tbl"
+    tEnv.registerTable("ListingsResult", tEnv.sqlQuery(sqlQueryListings))
+
+    /*
+     Join streams
+     */
+//    val sqlQuery =
+//      """
+//        |SELECT
+//        |  l.listing_id, l.data, l.ts, i.data, i.ts
+//        |FROM
+//        |  listings_tbl AS l,
+//        |  LATERAL TABLE (Images(l.proctime)) AS i
+//        |WHERE l.listing_id = i.listing_id
+//        |""".stripMargin
+//    tEnv.registerTable("JoinResult", tEnv.sqlQuery(sqlQuery))
+
+
+    /*
+     Output results to log
+     */
+    //listingsStream.print()
+    tEnv.scan("ListingsResult").toAppendStream[Row].print()
+//    tEnv.scan("ImagesResult").toAppendStream[Row].print()
+//
+//    tEnv.scan("JoinResult").toAppendStream[Row].print()
+
+    // Execute flow
+    env.execute("Flink Joiner App")
+
+
+    /**
+    def runStaticDataStream() = {
+
+      val msToMins = 60000
+
+      // Static data
+      val listingData = new mutable.MutableList[(Long, String, Timestamp)]
+      listingData.+=((1L, "listing 1.0", new Timestamp(1L*msToMins)))
+      listingData.+=((2L, "listing 2.0", new Timestamp(1L*msToMins)))
+      listingData.+=((3L, "listing 3.0", new Timestamp(1L*msToMins)))
+      listingData.+=((4L, "listing 4.0", new Timestamp(1L*msToMins)))
+      listingData.+=((2L, "listing 2.1", new Timestamp(3L*msToMins)))
+      listingData.+=((1L, "listing 1.1", new Timestamp(4L*msToMins)))
+      listingData.+=((2L, "listing 2.1", new Timestamp(10L*msToMins)))
+
+      val imageData = new mutable.MutableList[(Long, String, Timestamp)]
+      imageData.+=((1L, "Image 1.0", new Timestamp(1L*msToMins)))
+      imageData.+=((1L, "Image 1.1", new Timestamp(2L*msToMins)))
+      imageData.+=((1L, "Image 1.2", new Timestamp(3L*msToMins)))
+      imageData.+=((2L, "Image 2.0", new Timestamp(3L*msToMins)))
+
+      val openHouseData = new mutable.MutableList[(Long, String, Timestamp)]
+      openHouseData.+=((1L, "OH 1.0", new Timestamp(1L*msToMins)))
+      openHouseData.+=((1L, "OH 1.1", new Timestamp(2L*msToMins)))
+      openHouseData.+=((2L, "OH 2.0", new Timestamp(2L*msToMins)))
+
+
+      val listings = env
+        .fromCollection(listingData)
+        .assignTimestampsAndWatermarks(new TimestampExtractor[Long, String]())
+        .toTable(tEnv, 'id, 'data, 'rowtime.rowtime)
+
+      val images = env
+        .fromCollection(imageData)
+        .assignTimestampsAndWatermarks(new TimestampExtractor[Long, String]())
+        .toTable(tEnv, 'id, 'data, 'rowtime.rowtime)
+
+      val openHouses = env
+        .fromCollection(openHouseData)
+        .assignTimestampsAndWatermarks(new TimestampExtractor[Long, String]())
+        .toTable(tEnv, 'id, 'data, 'rowtime.rowtime)
+
+      tEnv.registerTable("listings", listings)
+      tEnv.registerTable("images", images)
+      tEnv.registerTable("open_houses", openHouses)
+
+    }
+      **/
+  }
+
+
+
+  private def getConsumerAndProducerProps(bootstrapServers: String): (Properties, Properties) = {
+
+    // Consumer properties: put together the broker list and a unique group id
+    val consumerProps = new Properties
+    consumerProps.setProperty("bootstrap.servers", bootstrapServers)
+    consumerProps.setProperty("group.id", s"flink-kafka-test-${System.currentTimeMillis}")
+
+    // Producer properties: we just need the broker list
+    val producerProps = new Properties
+    producerProps.setProperty("bootstrap.servers", bootstrapServers)
+
+    // Return the properties as a pair
+    (consumerProps, producerProps)
+
+  }
+}
+
+class TimestampExtractor[T1]
+// How late can data be is passed in
+  extends BoundedOutOfOrdernessTimestampExtractor[T1](Time.seconds(100))  {
+  override def extractTimestamp(element: T1): Long = {
+    val objectNode: ObjectNode = element.asInstanceOf[ObjectNode]
+    objectNode.get("value").get("ts").asLong()
+  }
+}
+
+
+package com.urbancompass.data.pipeline.flink
+/**
+import java.util
+import java.util.Properties
+import java.sql.Timestamp
+
+
+import org.apache.flink.api.java.utils.ParameterTool
+import org.apache.flink.api.scala._
+import org.apache.flink.streaming.api.scala.{DataStream, StreamExecutionEnvironment}
+import org.apache.flink.api.common.serialization.SimpleStringSchema
+import org.apache.flink.streaming.connectors.kafka.{FlinkKafkaConsumer, FlinkKafkaProducer}
+import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchema
+import org.apache.flink.streaming.api.TimeCharacteristic
+import org.apache.flink.api.scala._
+import org.apache.flink.table.api.scala._
+import org.apache.flink.table.descriptors.{Json, Kafka, Rowtime, Schema}
+import org.apache.flink.types.Row
+import org.apache.flink.table.api.{TableEnvironment, Types}
+import org.apache.flink.table.functions.TemporalTableFunction
+import org.apache.flink.runtime.state.filesystem.FsStateBackend
+import org.apache.flink.table.sources.tsextractors.{ExistingField}
+import scala.collection.mutable
+import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor
+import org.apache.flink.streaming.api.windowing.time.Time
+import org.apache.flink.api.java.typeutils.RowTypeInfo
+
+object FlinkJoiner {
+
+  def main(args: Array[String]) {
+
+    // Checking input parameters
+    val params = ParameterTool.fromArgs(args)
+
+    // Config parameters
+    val bootstrapServers = "localhost:9092"
+    val kafkaListingsTopic = params.getRequired("listings-topic")
+    val kafkaImagesTopic = params.getRequired("images-topic")
+    val kafkaJoinedTopic = params.getRequired("sink-topic")
+
+    // Set up environment
+    val env = StreamExecutionEnvironment.getExecutionEnvironment
+    val tEnv = TableEnvironment.getTableEnvironment(env)
+    env.setStateBackend(new FsStateBackend("file:///home/azfar.aziz/flinkPOC/checkpoints"))
+    env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
+    env.setParallelism(1)
+
+    val sqlQuery =
+      """
+        |SELECT
+        |  l.id, l.data, l.rowtime, i.data, i.rowtime
+        |FROM
+        |  listings_tbl AS l,
+        |  LATERAL TABLE (Images(l.rowtime)) AS i
+        |WHERE l.id = i.id
+        |""".stripMargin
+
+    runStaticDataStream()
+
+    val msToMins = 60000
+
+    // Static data
+    val listingData = new mutable.MutableList[(Long, String, Timestamp)]
+    listingData.+=((1L, "listing 1.0", new Timestamp(1L*msToMins)))
+    listingData.+=((2L, "listing 2.0", new Timestamp(1L*msToMins)))
+    listingData.+=((3L, "listing 3.0", new Timestamp(1L*msToMins)))
+    listingData.+=((4L, "listing 4.0", new Timestamp(1L*msToMins)))
+    listingData.+=((2L, "listing 2.1", new Timestamp(3L*msToMins)))
+    listingData.+=((1L, "listing 1.1", new Timestamp(4L*msToMins)))
+    listingData.+=((2L, "listing 2.1", new Timestamp(10L*msToMins)))
+
+    val imageData = new mutable.MutableList[(Long, String, Timestamp)]
+    imageData.+=((1L, "Image 1.0", new Timestamp(1L*msToMins)))
+    imageData.+=((1L, "Image 1.1", new Timestamp(2L*msToMins)))
+    imageData.+=((1L, "Image 1.2", new Timestamp(3L*msToMins)))
+    imageData.+=((2L, "Image 2.0", new Timestamp(3L*msToMins)))
+
+    val openHouseData = new mutable.MutableList[(Long, String, Timestamp)]
+    openHouseData.+=((1L, "OH 1.0", new Timestamp(1L*msToMins)))
+    openHouseData.+=((1L, "OH 1.1", new Timestamp(2L*msToMins)))
+    openHouseData.+=((2L, "OH 2.0", new Timestamp(2L*msToMins)))
+
+
+    //val listings = env
+    //  .fromCollection(listingData)
+    //  .assignTimestampsAndWatermarks(new TimestampExtractor[Long, String]())
+    //  .toTable(tEnv, 'id, 'data, 'rowtime.rowtime)
+
+    //val images = env
+    //  .fromCollection(imageData)
+    //  .assignTimestampsAndWatermarks(new TimestampExtractor[Long, String]())
+    //  .toTable(tenv, 'id, 'data, 'rowtime.rowtime)
+
+    //val openHouses = env
+    //  .fromCollection(openHouseData)
+    //  .assignTimestampsAndWatermarks(new TimestampExtractor[Long, String]())
+    //  .toTable(tEnv, 'id, 'data, 'rowtime.rowtime)
+
+    // Set up the kafka details
+    val (consumerProps, producerProps) = getConsumerAndProducerProps(bootstrapServers)
+
+    // Serializers used for reading topics
+    val serdeSchema = new SimpleStringSchema
+    //val deserializer = new KeyedDeserializationSchema[String](serdeSchema)
+
+    val kafkaListingsConsumer = new FlinkKafkaConsumer[String](kafkaListingsTopic, serdeSchema, consumerProps)
+    kafkaListingsConsumer.setStartFromEarliest()
+    kafkaListingsConsumer.assignTimestampsAndWatermarks(new TimestampExtractor[String]())
+
+    val kafkaImagesConsumer = new FlinkKafkaConsumer[String](kafkaImagesTopic, serdeSchema, consumerProps)
+    kafkaImagesConsumer.setStartFromEarliest()
+    kafkaImagesConsumer.assignTimestampsAndWatermarks(new TimestampExtractor[String]())
+
+    val rowType = new RowTypeInfo(Types.INT, Types.STRING, Types.SQL_TIMESTAMP)
+
+    def mapper(s: String): Row = {
+      val result = scala.util.parsing.json.JSON.parseFull(s)
+      result match {
+        case Some(e:Map[String,String]) => {
+          return Row.of(new Integer(e("id")), new String(e("data")), new Timestamp(e("ts").toLong))
+        }
+      }
+    }
+
+    val listingsStream = env.addSource(kafkaListingsConsumer).map(x => mapper(x))(rowType)
+    val listingsTbl = tEnv.fromDataStream(listingsStream, 'id, 'data, 'rowtime.rowtime)
+    tEnv.registerTable("listings_tbl", listingsTbl)
+
+    val ImagesStream = env.addSource(kafkaImagesConsumer).map(x => mapper(x))(rowType)
+    val ImagesTbl = tEnv.fromDataStream(ImagesStream, 'id, 'data, 'rowtime.rowtime)
+    tEnv.registerTable("images_tbl", ImagesTbl)
+
+    //tEnv.registerTable("listings", listings)
+    //tEnv.registerTable("images", images)
+    //tEnv.registerTable("open_houses", openHouses)
+    tEnv.registerFunction("Images", tEnv.scan("images_tbl").createTemporalTableFunction('rowtime, 'id))
+    //tEnv.registerFunction(
+    //  "OpenHouses",
+    //  tEnv.scan("open_houses").createTemporalTableFunction('rowtime, 'id))
+
+    val sqlQueryImages = "select * from images_tbl"
+    tEnv.registerTable("ImagesResult", tEnv.sqlQuery(sqlQueryImages))
+
+    val sqlQueryListings = "select * from listings_tbl"
+    tEnv.registerTable("ListingsResult", tEnv.sqlQuery(sqlQueryListings))
+
+    tEnv.registerTable("JoinResult", tEnv.sqlQuery(sqlQuery))
+
+    // Print out results of join
+    //val result = tEnv.scan("TemporalJoinResult").toAppendStream[Row]
+
+
+    //tblEnv.toAppendStream[Row](listingTbl).print()
+    //tblEnv.toAppendStream[Row](imageTbl).print()
+    tEnv.scan("ListingsResult").toAppendStream[Row].print()
+    tEnv.scan("ImagesResult").toAppendStream[Row].print()
+    tEnv.scan("JoinResult").toAppendStream[Row].print()
+
+
+    // Execute flow
+    env.execute("Flink Joiner App")
+  }
+
+  private def runStaticDataStream() = {
+
+
+
+
+  }
+
+  private def getConsumerAndProducerProps(bootstrapServers: String): (Properties, Properties) = {
+
+    // Consumer properties: put together the broker list and a unique group id
+    val consumerProps = new Properties
+    consumerProps.setProperty("bootstrap.servers", bootstrapServers)
+    //consumerProps.setProperty("group.id", s"flink-kafka-test-${System.currentTimeMillis}")
+
+    // Producer properties: we just need the broker list
+    val producerProps = new Properties
+    producerProps.setProperty("bootstrap.servers", bootstrapServers)
+
+    // Return the properties as a pair
+    (consumerProps, producerProps)
+
+  }
+}
+
+class TimestampExtractor[T1]
+  extends BoundedOutOfOrdernessTimestampExtractor[T1](Time.seconds(600))  {
+  override def extractTimestamp(element: T1): Long = {
+    val result = scala.util.parsing.json.JSON.parseFull(element.toString)
+    result match {
+      case Some(e:Map[String,String]) => {
+        return e("ts").toLong
+      }
+    }
+  }
+}
+
+
+/**
+class TimestampExtractor[T1, T2]
+  extends BoundedOutOfOrdernessTimestampExtractor[(T1, T2, Timestamp)](Time.seconds(10))  {
+  override def extractTimestamp(element: (T1, T2, Timestamp)): Long = {
+    element._3.getTime
+  }
+}
+  */
+/**
+package com.urbancompass.data.pipeline.flink
+
+import java.util
+import java.util.Properties
+
+import org.apache.flink.api.common.time.Time
+import org.apache.flink.api.java.utils.ParameterTool
+import org.apache.flink.api.scala._
+import org.apache.flink.streaming.api.scala.{DataStream, StreamExecutionEnvironment}
+import org.apache.flink.api.common.serialization.SimpleStringSchema
+import org.apache.flink.streaming.connectors.kafka.{FlinkKafkaConsumer, FlinkKafkaProducer}
+import org.apache.flink.streaming.util.serialization.KeyedDeserializationSchema
+import org.apache.flink.streaming.api.TimeCharacteristic
+import org.apache.flink.api.scala._
+import org.apache.flink.table.api.scala._
+import org.apache.flink.table.descriptors.{Json, Kafka, Rowtime, Schema}
+import org.apache.flink.types.Row
+import org.apache.flink.table.api.{TableEnvironment, Types}
+import org.apache.flink.table.functions.TemporalTableFunction
+
+object FlinkJoiner {
+
+  def main(args: Array[String]) {
+
+    // Checking input parameters
+    val params = ParameterTool.fromArgs(args)
+
+    // Config parameters
+    //val bootstrapServers = "b-2.development-data.2fgtkj.c1.kafka.us-east-1.amazonaws.com:9092,b-1.development-data.2fgtkj.c1.kafka.us-east-1.amazonaws.com:9092,b-3.development-data.2fgtkj.c1.kafka.us-east-1.amazonaws.com:9092"
+    //val kafkaListingsTopic = "data_listings_joined_aspen_mls_rets_av_1"
+    val bootstrapServers = "localhost:9092"
+    val kafkaListingsTopic = params.getRequired("listings-topic")
+    val kafkaImagesTopic = params.getRequired("images-topic")
+    val kafkaJoinedTopic = params.getRequired("sink-topic")
+
+    // Get the execution environment
+    val env: StreamExecutionEnvironment = StreamExecutionEnvironment.getExecutionEnvironment
+    env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
+
+    // Set up the kafka details
+    val (consumerProps, producerProps) = getConsumerAndProducerProps(bootstrapServers)
+
+    // Serializers used for reading topics
+    val serdeSchema = new SimpleStringSchema
+    //val deserializer = new KeyedDeserializationSchema[String](serdeSchema)
+
+    // Kafka Consumer(s)
+    //val kafkaListings = new FlinkKafkaConsumer[String]("la_crmls_rets-listings-mirrored-southpaw-02062019", serdeSchema, consumerProps)
+    //val kafkaListingsConsumer = new FlinkKafkaConsumer[String](kafkaListingsTopic, serdeSchema, consumerProps)
+    //kafkaListingsConsumer.setStartFromEarliest()
+    //val kafkaImagesConsumer = new FlinkKafkaConsumer[String](kafkaImagesTopic, serdeSchema, consumerProps)
+    //kafkaImagesConsumer.setStartFromEarliest()
+
+
+    // Add streams to environment
+    //val listingStream = env.addSource(kafkaListingsConsumer)
+    //val imageStream = env.addSource(kafkaImagesConsumer)
+
+    // Create table environment
+    val tblEnv = StreamTableEnvironment.create(env)
+
+    // Convert data streams to tables
+    //val listingTbl = tblEnv.fromDataStream(listingStream)
+    //val imageTbl = tblEnv.fromDataStream(imageStream)
+
+    // Connect to Kafka through tableAPI
+    // Create TableSources
+    tblEnv.connect(
+      new Kafka().version("universal").topic(kafkaListingsTopic)
+      .startFromEarliest().property("bootstrap.servers", bootstrapServers)
+    )
+    .withFormat(
+      new Json()
+        .failOnMissingField(true)
+        .deriveSchema()
+    )
+    .withSchema(
+      new Schema().field("listing_id", Types.STRING)
+        .field("listing_data", Types.STRING)
+    )
+    .inAppendMode()
+    .registerTableSource("listingTbl")
+
+    tblEnv.connect(
+      new Kafka().version("universal").topic(kafkaImagesTopic)
+      .startFromEarliest().property("bootstrap.servers", bootstrapServers)
+    )
+    .withFormat(
+      new Json()
+        .failOnMissingField(true)
+        .deriveSchema()
+    )
+    .withSchema(
+      new Schema().field("image_id", Types.STRING)
+        .field("image_data", Types.STRING)
+    )
+    .inAppendMode()
+    .registerTableSource("imageTbl")
+
+
+    // Create TableSink
+    tblEnv.connect(
+      new Kafka().version("universal").topic(kafkaJoinedTopic)
+      .property("bootstrap.servers", bootstrapServers)
+    )
+    .withFormat(
+      new Json()
+        .deriveSchema()
+        .failOnMissingField(false)
+    )
+    .withSchema(
+      new Schema()
+        .field("listing_id", Types.STRING)
+        .field("listing_data", Types.STRING)
+        .field("image_data", Types.STRING)
+    )
+    .inAppendMode()
+    .registerTableSink("joinedTbl")
+
+    // Write to sink topic
+    //tblEnv.sqlUpdate("INSERT INTO joinedTbl SELECT id, value FROM listingTbl")
+    val listingTbl = tblEnv.scan("listingTbl").select('listing_id, 'listing_data, 'listing_proctime.proctime)
+    val imageTbl = tblEnv.scan("imageTbl").select('image_id, 'image_data, 'image_proctime.proctime)
+
+    // Define Temporal Table Function
+    val imageFcn = imageTbl.createTemporalTableFunction('image_proctime, 'image_id)
+    tblEnv.registerFunction("imageFcn", imageFcn)
+
+    tblEnv.sqlUpdate("""
+    insert into joinedTbl
+    select
+      l.listing_id, l.listing_data, i.image_data,
+      TUMBLE_START(l.listing_proctime, interval '20' minute) as listing_ts
+    from
+      listingTbl l,
+      LATERAL TABLE(imageFcn(listing_id)) i
+    where
+      l.listing_id = i.image_id
+    group by
+      TUMBLE(l.listing_id, interval '20' minute)
+    """)
+
+
+    //listingTbl.joinLateral(imageFcn("listing_id"), 'listing_id === 'image_id)
+    //  .window(Over partitionBy 'listing_id orderBy 'proctime preceding UNBOUNDED_RANGE as 'w)
+    //  .select("listing_id, listing_data.upperCase(), image_data")
+    //  .insertInto("joinedTbl")
+
+
+    // Print out topic data to stdout
+    //val listingTbl = tblEnv.scan("listingTbl")
+    //val result = listingTbl.select('*')
+    //tblEnv.toAppendStream[(String, String)](listingTbl).print()
+
+
+    // Execute flow
+    env.execute("Flink Joiner App")
+  }
+
+  private def getConsumerAndProducerProps(bootstrapServers: String): (Properties, Properties) = {
+
+    // Consumer properties: put together the broker list and a unique group id
+    val consumerProps = new Properties
+    consumerProps.setProperty("bootstrap.servers", bootstrapServers)
+    //consumerProps.setProperty("group.id", s"flink-kafka-test-${System.currentTimeMillis}")
+
+    // Producer properties: we just need the broker list
+    val producerProps = new Properties
+    producerProps.setProperty("bootstrap.servers", bootstrapServers)
+
+    // Return the properties as a pair
+    (consumerProps, producerProps)
+
+  }
+}
+  **/
+
+
