@@ -16,7 +16,7 @@ import org.apache.flink.api.scala._
 import org.apache.flink.table.api.scala._
 import org.apache.flink.table.descriptors.{Json, Kafka, Rowtime, Schema}
 import org.apache.flink.types.Row
-import org.apache.flink.table.api.{TableEnvironment, Types}
+import org.apache.flink.table.api.{EnvironmentSettings, TableEnvironment, Types}
 import org.apache.flink.table.functions.TemporalTableFunction
 import org.apache.flink.runtime.state.filesystem.FsStateBackend
 import org.apache.flink.table.sources.tsextractors.ExistingField
@@ -74,13 +74,19 @@ object FlinkJoiner {
     val bootstrapServers = params.getRequired("bootstrap-server")
     val kafkaListingsTopic = params.getRequired("listings-topic")
     val kafkaAgentsTopic = params.getRequired("agents-topic")
-    val kafkaJoinedTopic = params.getRequired("sink-topic")
+  //  val kafkaJoinedTopic = params.getRequired("sink-topic")
 
     /*
      Set up environment
      */
+//    val env = StreamExecutionEnvironment.getExecutionEnvironment
+//    val tEnv = TableEnvironment.getTableEnvironment(env)
+
+
+    val fsSettings = EnvironmentSettings.newInstance().useOldPlanner().inStreamingMode().build()
     val env = StreamExecutionEnvironment.getExecutionEnvironment
-    val tEnv = TableEnvironment.getTableEnvironment(env)
+    val tEnv = StreamTableEnvironment.create(env, fsSettings)
+
     env.setStateBackend(new FsStateBackend("file:///Users/rkandoji/Documents/Software/flink-1.8.1/statebackend"))
     env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
     //env.setStreamTimeCharacteristic(TimeCharacteristic.ProcessingTime)

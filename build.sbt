@@ -11,7 +11,7 @@ organization := "com.urbancompass.data.pipeline.flink"
 
 ThisBuild / scalaVersion := "2.11.12"
 
-val flinkVersion = "1.8.1"
+val flinkVersion = "1.9.0"
 
 val flinkDependencies = Seq(
   "org.apache.flink" %% "flink-scala" % flinkVersion % "provided",
