@@ -29,7 +29,7 @@ lazy val root = (project in file(".")).
     libraryDependencies ++= flinkDependencies
   )
 
-assembly / mainClass := Some("com.urbancompass.data.pipeline.flink.FlinkJoiner")
+assembly / mainClass := Some("com.urbancompass.data.pipeline.flink.TestJoiner")
 
 // make run command include the provided dependencies
 Compile / run  := Defaults.runTask(Compile / fullClasspath,
