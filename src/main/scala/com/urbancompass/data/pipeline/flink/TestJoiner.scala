@@ -114,8 +114,8 @@ object TestJoiner {
     )
 
     def listingMapper(record: ObjectNode): Row = {
-      println("### listing object")
-      println(record)
+      //      println("### listing object")
+      //      println(record)
       val obj = record.get("value")
       return Row.of(
         if (obj.has("Earnest $ Payable To")) obj.get("Earnest $ Payable To").asText() else "",
@@ -149,9 +149,9 @@ object TestJoiner {
     )
     tEnv.registerTable("listings_tbl", listingsTbl)
 
-    val resListings = tEnv.sqlQuery("SELECT * from listings_tbl")
-    val lRow: DataStream[Row] = tEnv.toAppendStream[Row](resListings)
-    lRow.print()
+    //    val resListings = tEnv.sqlQuery("SELECT * from listings_tbl")
+    //    val lRow: DataStream[Row] = tEnv.toAppendStream[Row](resListings)
+    //    lRow.print()
 
     val rowAgentType = new RowTypeInfo(
       Types.STRING, // trace_id
@@ -191,21 +191,34 @@ object TestJoiner {
     )
     tEnv.registerTable("agents_tbl", agentsTbl)
 
-    val resAgents = tEnv.sqlQuery("SELECT * from agents_tbl")
-    val aRow: DataStream[Row] = tEnv.toAppendStream[Row](resAgents)
-    aRow.print()
+    //    val resAgents = tEnv.sqlQuery("SELECT * from agents_tbl")
+    //    val aRow: DataStream[Row] = tEnv.toAppendStream[Row](resAgents)
+    //    aRow.print()
 
-    val joinQuery =
+    //    val joinQuery =
+    //      """
+    //        | SELECT *
+    //        | FROM listings_tbl
+    //        | INNER JOIN agents_tbl
+    //        | ON listings_tbl.agent_id = agents_tbl.agent_idb
+    //        | """.stripMargin
+    //    val result = tEnv.sqlQuery(joinQuery)
+    //    val row: DataStream[Row] = tEnv.toAppendStream[Row](result)
+    //    println("### INNER JOIN result")
+    //    row.print()
+
+
+    val leftJoinQuery =
       """
         | SELECT *
-        | FROM listings_tbl
-        | INNER JOIN agents_tbl
-        | ON listings_tbl.agent_id = agents_tbl.agent_id
+        | FROM listings_tbl l
+        | LEFT JOIN agents_tbl a
+        | ON l.agent_id = a.agent_id
         | """.stripMargin
-    val result = tEnv.sqlQuery(joinQuery)
-    val row: DataStream[Row] = tEnv.toAppendStream[Row](result)
-    println("### result")
-    row.print()
+    val leftResult = tEnv.sqlQuery(leftJoinQuery)
+    val leftJoinRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](leftResult)
+    println("### JOIN result")
+    leftJoinRow.print()
 
     // Execute flow
     env.execute("Flink Joiner App")
