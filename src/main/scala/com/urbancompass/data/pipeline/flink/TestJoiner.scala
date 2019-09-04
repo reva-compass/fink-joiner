@@ -118,19 +118,20 @@ object TestJoiner {
       println(record)
       val obj = record.get("value")
       return Row.of(
-        obj.get("Earnest $ Payable To").asText(),
-        obj.get("Status Change Date").asText(),
-        obj.get("Inclusions").asText(),
-        obj.get("County").asText(),
-        obj.get("Agent ID").asText(),
-        obj.get("Terms Offered").asText(),
-        obj.get("Nbr of Acres").asText(),
-        obj.get("CoListingMemberUrl").asText(),
-        obj.get("CoList Agent ID").asText(),
-        obj.get("List Office Board Code").asText(),
-        obj.get("LIST_207").asText()
+        if (obj.has("Earnest $ Payable To")) obj.get("Earnest $ Payable To").asText() else "",
+        if (obj.has("Status Change Date")) obj.get("Status Change Date").asText() else "",
+        if (obj.has("Inclusions")) obj.get("Inclusions").asText() else "",
+        if (obj.has("County")) obj.get("County").asText() else "",
+        if (obj.has("Agent ID")) obj.get("Agent ID").asText() else "",
+        if (obj.has("Terms Offered")) obj.get("Terms Offered").asText() else "",
+        if (obj.has("Nbr of Acres")) obj.get("Nbr of Acres").asText() else "",
+        if (obj.has("CoListingMemberUrl")) obj.get("CoListingMemberUrl").asText() else "",
+        if (obj.has("CoList Agent ID")) obj.get("CoList Agent ID").asText() else "",
+        if (obj.has("List Office Board Code")) obj.get("List Office Board Code").asText() else "",
+        if (obj.has("LIST_207")) obj.get("LIST_207").asText() else ""
       )
     }
+
 
     val listingsStream = env.addSource(kafkaListingsConsumer).map(x => listingMapper(x))(rowListingType)
     val listingsTbl = tEnv.fromDataStream(listingsStream,
@@ -167,13 +168,13 @@ object TestJoiner {
       //      println(record)
       val obj = record.get("value")
       return Row.of(
-        obj.get("City").asText(),
-        obj.get("Office ID").asText(),
-        obj.get("Email").asText(),
-        obj.get("RENegotiation Exp").asText(),
-        obj.get("NRDSID").asText(),
-        obj.get("MLS Status").asText(),
-        obj.get("Agent ID").asText()
+        if (obj.has("City")) obj.get("City").asText() else "",
+        if (obj.has("Office ID")) obj.get("Office ID").asText() else "",
+        if (obj.has("Email")) obj.get("Email").asText() else "",
+        if (obj.has("RENegotiation Exp")) obj.get("RENegotiation Exp").asText() else "",
+        if (obj.has("NRDSID")) obj.get("NRDSID").asText() else "",
+        if (obj.has("MLS Status")) obj.get("MLS Status").asText() else "",
+        if (obj.has("Agent ID")) obj.get("Agent ID").asText() else ""
       )
     }
 
@@ -211,12 +212,14 @@ object TestJoiner {
 
 
   }
-  
+
   private def getConsumerAndProducerProps(bootstrapServers: String): (Properties, Properties) = {
 
     val consumerProps = new Properties
     consumerProps.setProperty("bootstrap.servers", bootstrapServers)
-    consumerProps.setProperty("group.id", s"flink-kafka-test-${System.currentTimeMillis}")
+    consumerProps.setProperty("group.id", s"flink-kafka-test-${
+      System.currentTimeMillis
+    } ")
 
     // Producer properties: we just need the broker list
     val producerProps = new Properties
