@@ -33,7 +33,6 @@ import org.apache.avro.specific.SpecificDatumReader
 import org.apache.avro.io.DecoderFactory
 import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
 import com.sksamuel.avro4s.{AvroInputStream, AvroName, AvroNamespace, AvroSchema}
-import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.core.JsonParseException
 
 object TestJoiner {
 
