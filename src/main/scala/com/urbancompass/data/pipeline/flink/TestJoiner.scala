@@ -132,7 +132,7 @@ object TestJoiner {
       'terms_offered,
       'nbr_of_acres,
       'colisting_member_url,
-      'colist_agent_id,
+      'l_colist_agent_id,
       'list_office_board_code,
       'list_207
     )
@@ -250,23 +250,50 @@ object TestJoiner {
     //    println("### LEFT JOIN result")
     //    leftJoinRow.print()
 
-    val nestedJoinQuery =
+
+
+//        val leftJoinQuery2 =
+//          """
+//            | SELECT *
+//            | FROM listings_tbl l
+//            | LEFT JOIN agents_tbl aa ON l.l_agent_id = aa.agent_id
+//            | LEFT JOIN agents_tbl ab ON l.l_colist_agent_id = ab.agent_id
+//            | """.stripMargin
+//        val leftResult2 = tEnv.sqlQuery(leftJoinQuery2)
+//        val leftJoinRow2: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](leftResult2)
+//        println("### LEFT JOIN2 result")
+//        leftJoinRow2.print()
+
+    val leftJoinQuery2 =
       """
         | SELECT *
-        | FROM
-        | (
-        | SELECT *
         | FROM listings_tbl l
-        | LEFT JOIN agents_tbl a
-        | ON l.l_agent_id = a.agent_id
-        | ) AS so
-        | LEFT JOIN oh_tbl AS oh
-        | ON so.listing_id = oh.oh_listing_id
+        | LEFT JOIN agents_tbl aa ON l.l_agent_id = aa.agent_id
+        | LEFT JOIN agents_tbl ab ON l.l_colist_agent_id = ab.agent_id
+        | LEFT JOIN oh_tbl AS oh ON l.listing_id = oh.oh_listing_id
         | """.stripMargin
-    val nestedResult = tEnv.sqlQuery(nestedJoinQuery)
-    val nestedJoinRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](nestedResult)
-    println("### NESTED JOIN result")
-    nestedJoinRow.print()
+    val leftResult2 = tEnv.sqlQuery(leftJoinQuery2)
+    val leftJoinRow2: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](leftResult2)
+    println("### LEFT JOIN2 result")
+    leftJoinRow2.print()
+
+//    val nestedJoinQuery =
+//      """
+//        | SELECT *
+//        | FROM
+//        | (
+//        | SELECT *
+//        | FROM listings_tbl l
+//        | LEFT JOIN agents_tbl a
+//        | ON l.l_agent_id = a.agent_id
+//        | ) AS so
+//        | LEFT JOIN oh_tbl AS oh
+//        | ON so.listing_id = oh.oh_listing_id
+//        | """.stripMargin
+//    val nestedResult = tEnv.sqlQuery(nestedJoinQuery)
+//    val nestedJoinRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](nestedResult)
+//    println("### NESTED JOIN result")
+//    nestedJoinRow.print()
 
     // Execute flow
     env.execute("Flink Joiner App")
