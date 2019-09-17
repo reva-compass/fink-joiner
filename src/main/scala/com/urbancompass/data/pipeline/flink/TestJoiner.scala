@@ -105,7 +105,7 @@ object TestJoiner {
 
     def listingMapper(record: ObjectNode): Row = {
       val obj = record.get("value")
-      val x: java.lang.Long = obj.get("listing_timestamp").asText().toInt
+      val x: java.lang.Long = obj.get("listing_timestamp").asText().toLong
       return Row.of(
         if (obj.has("Listing ID")) obj.get("Listing ID").asText() else "",
         if (obj.has("Earnest $ Payable To")) obj.get("Earnest $ Payable To").asText() else "",
@@ -148,10 +148,11 @@ object TestJoiner {
     //    lRow.print()
 
 
+    // Table with latest listings, and no duplicates
     val listingsTblTs = tEnv.sqlQuery("SELECT * FROM listings_tbl WHERE (listing_id, listing_timestamp) IN (SELECT listing_id, MAX(listing_timestamp) FROM listings_tbl GROUP BY listing_id)")
     tEnv.registerTable("listings_tbl_ts", listingsTblTs)
-    //    val lRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](listingsTblTs)
-    //    lRow.print()
+//    val lRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](listingsTblTs)
+//    lRow.print()
 
 
     val rowAgentType = new RowTypeInfo(
@@ -167,7 +168,7 @@ object TestJoiner {
 
     def agentMapper(record: ObjectNode): Row = {
       val obj = record.get("value")
-      val x: java.lang.Long = obj.get("agent_timestamp").asText().toInt
+      val x: java.lang.Long = obj.get("agent_timestamp").asText().toLong
       return Row.of(
         if (obj.has("City")) obj.get("City").asText() else "",
         if (obj.has("Office ID")) obj.get("Office ID").asText() else "",
@@ -195,57 +196,60 @@ object TestJoiner {
     )
     tEnv.registerTable("agents_tbl", agentsTbl)
 
-    //    val resAgents = tEnv.sqlQuery("SELECT * from agents_tbl")
-    //    val aRow: DataStream[Row] = tEnv.toAppendStream[Row](resAgents)
-    //    aRow.print()
-
+    // Table with latest agents, and no duplicates
     val agentsTblTs = tEnv.sqlQuery("SELECT * FROM agents_tbl WHERE (agent_id, agent_timestamp) IN (SELECT agent_id, MAX(agent_timestamp) FROM agents_tbl GROUP BY agent_id)")
     tEnv.registerTable("agents_tbl_ts", agentsTblTs)
     //    val aRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](agentsTblTs)
     //    aRow.print()
 
-    //    val rowOHType = new RowTypeInfo(
-    //      Types.STRING, // trace_id
-    //      Types.STRING, // data_version
-    //      Types.STRING, // ts_created_at
-    //      Types.STRING, // __raw_ingest_start_time__
-    //      Types.STRING, // __uc_id_sha__
-    //      Types.STRING, // Agent ID
-    //      Types.STRING, // Agent First Name
-    //      Types.STRING // Agent First Name
-    //    )
-    //
-    //    def oHMapper(record: ObjectNode): Row = {
-    //      val obj = record.get("value")
-    //      return Row.of(
-    //        if (obj.has("City")) obj.get("City").asText() else "",
-    //        if (obj.has("Open House Comments")) obj.get("Open House Comments").asText() else "",
-    //        if (obj.has("Event End")) obj.get("Event End").asText() else "",
-    //        if (obj.has("Street Address")) obj.get("Street Address").asText() else "",
-    //        if (obj.has("Listing ID")) obj.get("Listing ID").asText() else "",
-    //        if (obj.has("Office Primary Phone")) obj.get("Office Primary Phone").asText() else "",
-    //        if (obj.has("Event Unique ID")) obj.get("Event Unique ID").asText() else "",
-    //        if (obj.has("Listing Agent Id")) obj.get("Listing Agent Id").asText() else ""
-    //      )
-    //    }
+    val rowOHType = new RowTypeInfo(
+      Types.STRING, // trace_id
+      Types.STRING, // data_version
+      Types.STRING, // ts_created_at
+      Types.STRING, // __raw_ingest_start_time__
+      Types.STRING, // __uc_id_sha__
+      Types.STRING, // Agent ID
+      Types.STRING, // Agent First Name
+      Types.STRING, // Agent First Name
+      Types.LONG
+    )
 
-    //    val ohStream = env.addSource(kafkaOHConsumer).map(x => oHMapper(x))(rowOHType)
-    //
-    //    val ohTbl = tEnv.fromDataStream(ohStream,
-    //      'oh_city,
-    //      'oh_comments,
-    //      'oh_event_end,
-    //      'oh_street_address,
-    //      'oh_listing_id,
-    //      'oh_office_primary_phone,
-    //      'oh_event_unique_id,
-    //      'oh_listing_agent_id
-    //    )
-    //    tEnv.registerTable("oh_tbl", ohTbl)
+    def oHMapper(record: ObjectNode): Row = {
+      val obj = record.get("value")
+      val x: java.lang.Long = obj.get("oh_timestamp").asText().toLong
+      return Row.of(
+        if (obj.has("City")) obj.get("City").asText() else "",
+        if (obj.has("Open House Comments")) obj.get("Open House Comments").asText() else "",
+        if (obj.has("Event End")) obj.get("Event End").asText() else "",
+        if (obj.has("Street Address")) obj.get("Street Address").asText() else "",
+        if (obj.has("Listing ID")) obj.get("Listing ID").asText() else "",
+        if (obj.has("Office Primary Phone")) obj.get("Office Primary Phone").asText() else "",
+        if (obj.has("Event Unique ID")) obj.get("Event Unique ID").asText() else "",
+        if (obj.has("Listing Agent Id")) obj.get("Listing Agent Id").asText() else "",
+        x
+      )
+    }
 
-    //    val resOH = tEnv.sqlQuery("SELECT * from oh_tbl")
-    //    val ohRow: DataStream[Row] = tEnv.toAppendStream[Row](resOH)
-    //    ohRow.print()
+    val ohStream = env.addSource(kafkaOHConsumer).map(x => oHMapper(x))(rowOHType)
+
+    val ohTbl = tEnv.fromDataStream(ohStream,
+      'oh_city,
+      'oh_comments,
+      'oh_event_end,
+      'oh_street_address,
+      'oh_listing_id,
+      'oh_office_primary_phone,
+      'oh_event_unique_id,
+      'oh_listing_agent_id,
+      'oh_timestamp
+    )
+    tEnv.registerTable("oh_tbl", ohTbl)
+
+    // Table with latest open-house, and no duplicates
+    val ohTblTs = tEnv.sqlQuery("SELECT * FROM oh_tbl WHERE (oh_event_unique_id, oh_timestamp) IN (SELECT oh_event_unique_id, MAX(oh_timestamp) FROM oh_tbl GROUP BY oh_event_unique_id)")
+    tEnv.registerTable("oh_tbl_ts", ohTblTs)
+//    val oHRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](ohTblTs)
+//    oHRow.print()
 
     //
     //        val joinQuery =
@@ -260,24 +264,24 @@ object TestJoiner {
     //        println("### INNER JOIN result")
     //        row.print()
 
-    val leftJoinQuery =
-      """
-        | SELECT *
-        | FROM listings_tbl_ts l
-        | LEFT JOIN agents_tbl_ts a
-        | ON l.l_agent_id = a.agent_id
-        | """.stripMargin
-    val leftResult = tEnv.sqlQuery(leftJoinQuery)
-    tEnv.registerTable("leftResult_tbl", leftResult)
-    val leftJoinRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](leftResult)
-    println("### LEFT JOIN result")
-    leftJoinRow.print()
-
-
-    val countTbl = tEnv.sqlQuery("SELECT COUNT(*) FROM leftResult_tbl")
-    val cRow: DataStream[(Boolean, Long)] = tEnv.toRetractStream[Long](countTbl)
-    println("### COUNT")
-    cRow.print()
+    //    val leftJoinQuery =
+    //      """
+    //        | SELECT *
+    //        | FROM listings_tbl_ts l
+    //        | LEFT JOIN agents_tbl_ts a
+    //        | ON l.l_agent_id = a.agent_id
+    //        | """.stripMargin
+    //    val leftResult = tEnv.sqlQuery(leftJoinQuery)
+    //    tEnv.registerTable("leftResult_tbl", leftResult)
+    //    val leftJoinRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](leftResult)
+    //    println("### LEFT JOIN result")
+    //    leftJoinRow.print()
+    //
+    //
+    //    val countTbl = tEnv.sqlQuery("SELECT COUNT(*) FROM leftResult_tbl")
+    //    val cRow: DataStream[(Boolean, Long)] = tEnv.toRetractStream[Long](countTbl)
+    //    println("### COUNT")
+    //    cRow.print()
 
     //        val leftJoinQuery2 =
     //          """
@@ -291,18 +295,18 @@ object TestJoiner {
     //        println("### LEFT JOIN2 result")
     //        leftJoinRow2.print()
 
-    //    val leftJoinQuery2 =
-    //      """
-    //        | SELECT *
-    //        | FROM listings_tbl l
-    //        | LEFT JOIN agents_tbl aa ON l.l_agent_id = aa.agent_id
-    //        | LEFT JOIN agents_tbl ab ON l.l_colist_agent_id = ab.agent_id
-    //        | LEFT JOIN oh_tbl AS oh ON l.listing_id = oh.oh_listing_id
-    //        | """.stripMargin
-    //    val leftResult2 = tEnv.sqlQuery(leftJoinQuery2)
-    //    val leftJoinRow2: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](leftResult2)
-    //    println("### LEFT JOIN2 result")
-    //    leftJoinRow2.print()
+        val leftJoinQuery2 =
+          """
+            | SELECT *
+            | FROM listings_tbl_ts l
+            | LEFT JOIN agents_tbl_ts aa ON l.l_agent_id = aa.agent_id
+            | LEFT JOIN agents_tbl_ts ab ON l.l_colist_agent_id = ab.agent_id
+            | LEFT JOIN oh_tbl_ts AS oh ON l.listing_id = oh.oh_listing_id
+            | """.stripMargin
+        val leftResult2 = tEnv.sqlQuery(leftJoinQuery2)
+        val leftJoinRow2: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](leftResult2)
+        println("### LEFT JOIN2 result")
+        leftJoinRow2.print()
 
     //    val nestedJoinQuery =
     //      """
