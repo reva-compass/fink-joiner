@@ -9,9 +9,9 @@ import org.apache.flink.api.scala._
 import org.apache.flink.runtime.state.filesystem.FsStateBackend
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.node.ObjectNode
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
-import org.apache.flink.streaming.api.TimeCharacteristic
-import org.apache.flink.streaming.api.scala.StreamExecutionEnvironment
-import org.apache.flink.streaming.connectors.kafka.{FlinkKafkaConsumer, FlinkKafkaProducer}
+import org.apache.flink.streaming.api.scala.{DataStream, StreamExecutionEnvironment}
+import org.apache.flink.streaming.api.{CheckpointingMode, TimeCharacteristic}
+import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer
 import org.apache.flink.streaming.util.serialization.JSONKeyValueDeserializationSchema
 import org.apache.flink.table.api.Types
 import org.apache.flink.table.api.scala._
@@ -41,10 +41,27 @@ object CRMLSJoiner {
     //   val tEnv = TableEnvironment.getTableEnvironment(env)
     env.setStateBackend(new FsStateBackend("file:///Users/rkandoji/Documents/Software/flink-1.8.1/statebackend"))
     env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
-    env.setParallelism(1)
+    env.setParallelism(2)
 
     env.getConfig.enableForceAvro()
     env.getConfig.disableForceKryo()
+
+    //object reuse mode
+    val config = env.getConfig
+    config.enableObjectReuse()
+
+    // checkpointing
+    // start a checkpoint every 1000 ms
+    env.enableCheckpointing(1000)
+    // advanced options:
+    // set mode to exactly-once (this is the default)
+    env.getCheckpointConfig.setCheckpointingMode(CheckpointingMode.EXACTLY_ONCE)
+    // make sure 500 ms of progress happen between checkpoints
+    env.getCheckpointConfig.setMinPauseBetweenCheckpoints(500)
+    // prevent the tasks from failing if an error happens in their checkpointing, the checkpoint will just be declined.
+    env.getCheckpointConfig.setFailOnCheckpointingErrors(false)
+    // allow only one checkpoint to be in progress at the same time
+    env.getCheckpointConfig.setMaxConcurrentCheckpoints(1)
 
     lazy val mapper = new ObjectMapper()
 
@@ -53,7 +70,7 @@ object CRMLSJoiner {
      */
     val (consumerProps, producerProps) = getConsumerAndProducerProps(bootstrapServers)
 
-    val kafkaProducer = new FlinkKafkaProducer[String](bootstrapServers, "my-topic", new SimpleStringSchema)
+    //  val kafkaProducer = new FlinkKafkaProducer[String](bootstrapServers, "my-topic", new SimpleStringSchema)
 
     // Serializers used for reading topics
     val serdeSchema = new SimpleStringSchema
@@ -206,14 +223,15 @@ object CRMLSJoiner {
         | LEFT JOIN agents_tbl_ts ad ON l.l_co_buyer_agent_key = ad.a_uc_pk
         | """.stripMargin
     val leftResult2 = tEnv.sqlQuery(leftJoinQuery2)
-    tEnv.toRetractStream[Row](leftResult2).addSink(kafkaProducer)
+    tEnv.registerTable("leftResult_tbl", leftResult2)
+    //  val oStream: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](leftResult2)
     //    println("### LEFT JOIN2 result")
     //leftJoinRow2.print()
 
-    //        val countTbl = tEnv.sqlQuery("SELECT COUNT(*) FROM leftResult_tbl")
-    //        val cRow: DataStream[(Boolean, Long)] = tEnv.toRetractStream[Long](countTbl)
-    //        println("### COUNT")
-    //        cRow.print()
+    val countTbl = tEnv.sqlQuery("SELECT COUNT(*) FROM leftResult_tbl")
+    val cRow: DataStream[(Boolean, Long)] = tEnv.toRetractStream[Long](countTbl)
+    println("### COUNT")
+    // cRow.print()
 
     // Execute flow
     env.execute("Flink Joiner App")
