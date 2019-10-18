@@ -6,11 +6,11 @@ import org.apache.flink.api.common.serialization.SimpleStringSchema
 import org.apache.flink.api.java.typeutils.RowTypeInfo
 import org.apache.flink.api.java.utils.ParameterTool
 import org.apache.flink.api.scala._
-import org.apache.flink.runtime.state.filesystem.FsStateBackend
+import org.apache.flink.contrib.streaming.state.RocksDBStateBackend
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.node.ObjectNode
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
+import org.apache.flink.streaming.api.CheckpointingMode
 import org.apache.flink.streaming.api.scala.{DataStream, StreamExecutionEnvironment}
-import org.apache.flink.streaming.api.{CheckpointingMode, TimeCharacteristic}
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer
 import org.apache.flink.streaming.util.serialization.JSONKeyValueDeserializationSchema
 import org.apache.flink.table.api.Types
@@ -30,17 +30,29 @@ object CRMLSJoiner {
     val bootstrapServers = params.getRequired("bootstrap-server")
     val kafkaListingsTopic = params.getRequired("listings-topic")
     val kafkaAgentsTopic = params.getRequired("agents-topic")
+    val kafkaOHTopic = params.getRequired("oh-topic")
+    val kafkaOfficeTopic = params.getRequired("office-topic")
+    val kafkaMediaTopic = params.getRequired("media-topic")
     println(("# bootstrapServers: " + bootstrapServers))
     println("# kafkaListingsTopic: " + kafkaListingsTopic)
     println("## kafkaAgentsTopic: " + kafkaAgentsTopic)
+    println("## kafkaOHTopic: " + kafkaOHTopic)
+    println("## kafkaOfficeTopic: " + kafkaOfficeTopic)
+    println("## kafkaMediaTopic: " + kafkaMediaTopic)
+
     /*
      Set up environment
      */
     val env = StreamExecutionEnvironment.getExecutionEnvironment
     val tEnv = StreamTableEnvironment.create(env)
     //   val tEnv = TableEnvironment.getTableEnvironment(env)
-    env.setStateBackend(new FsStateBackend("file:///Users/rkandoji/Documents/Software/flink-1.8.1/statebackend"))
-    env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
+    //    env.setStateBackend(new FsStateBackend("file:///Users/rkandoji/Documents/Software/flink-1.8.1/statebackend"))
+    //    env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
+
+
+    val backend = new RocksDBStateBackend("file:///Users/rkandoji/Documents/Software/flink-1.8.1/statebackend", true)
+
+    env.setStateBackend(backend)
     env.setParallelism(2)
 
     env.getConfig.enableForceAvro()
@@ -88,20 +100,31 @@ object CRMLSJoiner {
       Types.STRING, // uc_type
       Types.LONG, // uc_valid_day
       Types.LONG, //uc_valid_ts
+      Types.STRING, // ListingKeyNumeric
       Types.STRING, //ListAgentKeyNumeric
       Types.STRING, //BuyerAgentKeyNumeric
       Types.STRING, //CoListAgentKeyNumeric
-      Types.STRING //CoBuyerAgentKeyNumeric
+      Types.STRING, //CoBuyerAgentKeyNumeric
+      Types.STRING, //ListOfficeKeyNumeric
+      Types.STRING, //BuyerOfficeKeyNumeric
+      Types.STRING, //CoListOfficeKeyNumeric
+      Types.STRING //CoBuyerOfficeKeyNumeric
     )
 
     def listingMapper(record: ObjectNode): Row = {
       val obj = record.get("value")
       val da = obj.get("data").asText()
       val dataNode = mapper.readValue[JsonNode](da, classOf[JsonNode])
+      val listingKey = if (dataNode.has("ListingKeyNumeric")) dataNode.get("ListingKeyNumeric").asText() else null
       val listAgentKey = if (dataNode.has("ListAgentKeyNumeric")) dataNode.get("ListAgentKeyNumeric").asText() else null
       val buyerAgentKey = if (dataNode.has("BuyerAgentKeyNumeric")) dataNode.get("BuyerAgentKeyNumeric").asText() else null
       val coListAgentKey = if (dataNode.has("CoListAgentKeyNumeric")) dataNode.get("CoListAgentKeyNumeric").asText() else null
       val coBuyerAgentKey = if (dataNode.has("CoBuyerAgentKeyNumeric")) dataNode.get("CoBuyerAgentKeyNumeric").asText() else null
+      val listOfficeKey = if (dataNode.has("ListOfficeKeyNumeric")) dataNode.get("ListOfficeKeyNumeric").asText() else null
+      val buyerOfficeKey = if (dataNode.has("BuyerOfficeKeyNumeric")) dataNode.get("BuyerOfficeKeyNumeric").asText() else null
+      val coListOfficeKey = if (dataNode.has("CoListOfficeKeyNumeric")) dataNode.get("CoListOfficeKeyNumeric").asText() else null
+      val coBuyerOfficeKey = if (dataNode.has("CoBuyerOfficeKeyNumeric")) dataNode.get("CoBuyerOfficeKeyNumeric").asText() else null
+
       val createdTS: java.lang.Long = obj.get("uc_created_ts").asText().toLong
       val validDay: java.lang.Long = obj.get("uc_valid_day").asText().toLong
       val validTS: java.lang.Long = obj.get("uc_valid_ts").asText().toLong
@@ -115,10 +138,15 @@ object CRMLSJoiner {
         if (obj.has("uc_type")) obj.get("uc_type").asText() else "",
         validDay,
         validTS,
+        listingKey,
         listAgentKey,
         buyerAgentKey,
         coListAgentKey,
-        coBuyerAgentKey
+        coBuyerAgentKey,
+        listOfficeKey,
+        buyerOfficeKey,
+        coListOfficeKey,
+        coBuyerOfficeKey
       )
     }
 
@@ -134,18 +162,23 @@ object CRMLSJoiner {
       'l_uc_type,
       'l_uc_valid_day,
       'l_uc_valid_ts,
+      'l_listing_key,
       'l_list_agent_key,
       'l_buyer_agent_key,
       'l_co_list_agent_key,
-      'l_co_buyer_agent_key
+      'l_co_buyer_agent_key,
+      'l_list_office_key,
+      'l_buyer_office_key,
+      'l_co_list_office_key,
+      'l_co_buyer_office_key
     )
     tEnv.registerTable("listings_tbl", listingsTbl)
 
     // Table with latest listings, and no duplicates
     val listingsTblTs = tEnv.sqlQuery("SELECT * FROM listings_tbl WHERE (l_uc_pk, l_uc_created_ts) IN (SELECT l_uc_pk, MAX(l_uc_created_ts) FROM listings_tbl GROUP BY l_uc_pk)")
     tEnv.registerTable("listings_tbl_ts", listingsTblTs)
-    //    val lRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](listingsTblTs)
-    //    lRow.print()
+//    val lRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](listingsTblTs)
+//    lRow.print()
 
 
     val kafkaAgentsConsumer = new FlinkKafkaConsumer[ObjectNode](kafkaAgentsTopic, jsonDeserdeSchema, consumerProps)
@@ -200,37 +233,144 @@ object CRMLSJoiner {
     //   val aRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](agentsTblTs)
     //    aRow.print()
 
-    //        val leftJoinQuery =
-    //          """
-    //            | SELECT *
-    //            | FROM listings_tbl_ts l
-    //            | LEFT JOIN agents_tbl_ts a
-    //            | ON l.l_list_agent_key = a.a_uc_pk
-    //            | """.stripMargin
-    //        val leftResult = tEnv.sqlQuery(leftJoinQuery)
-    //        tEnv.registerTable("leftResult_tbl", leftResult)
-    //        val leftJoinRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](leftResult)
-    //        println("### LEFT JOIN result")
-    //        leftJoinRow.print()
+    val kafkaOHConsumer = new FlinkKafkaConsumer[ObjectNode](kafkaOHTopic, jsonDeserdeSchema, consumerProps)
+    kafkaOHConsumer.setStartFromEarliest()
 
-    val leftJoinQuery2 =
-      """
-        | SELECT *
-        | FROM listings_tbl_ts l
-        | LEFT JOIN agents_tbl_ts aa ON l.l_list_agent_key = aa.a_uc_pk
-        | LEFT JOIN agents_tbl_ts ab ON l.l_buyer_agent_key = ab.a_uc_pk
-        | LEFT JOIN agents_tbl_ts ac ON l.l_co_list_agent_key = ac.a_uc_pk
-        | LEFT JOIN agents_tbl_ts ad ON l.l_co_buyer_agent_key = ad.a_uc_pk
-        | """.stripMargin
-    val leftResult2 = tEnv.sqlQuery(leftJoinQuery2)
-    tEnv.registerTable("leftResult_tbl", leftResult2)
-    //  val oStream: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](leftResult2)
-    //    println("### LEFT JOIN2 result")
-    //leftJoinRow2.print()
+    val rowOHType = new RowTypeInfo(
+      Types.STRING, // data
+      Types.STRING, // uc_pk
+      Types.STRING, // uc_update_ts
+      Types.STRING, // uc_version
+      Types.LONG, // uc_created_ts
+      Types.STRING, // uc_row_type
+      Types.STRING, // uc_type
+      Types.LONG, // uc_valid_day
+      Types.LONG, // uc_valid_ts
+      Types.STRING // ListingKeyNumeric
+    )
 
-    val countTbl = tEnv.sqlQuery("SELECT COUNT(*) FROM leftResult_tbl")
-    val cRow: DataStream[(Boolean, Long)] = tEnv.toRetractStream[Long](countTbl)
-    println("### COUNT")
+    def oHMapper(record: ObjectNode): Row = {
+      val obj = record.get("value")
+      val da = obj.get("data").asText()
+      val dataNode = mapper.readValue[JsonNode](da, classOf[JsonNode])
+      val listingKey = if (dataNode.has("ListingKeyNumeric")) dataNode.get("ListingKeyNumeric").asText() else null
+      val createdTS: java.lang.Long = obj.get("uc_created_ts").asText().toLong
+      val validDay: java.lang.Long = obj.get("uc_valid_day").asText().toLong
+      val validTS: java.lang.Long = obj.get("uc_valid_ts").asText().toLong
+      return Row.of(
+        if (obj.has("data")) obj.get("data").asText() else "",
+        if (obj.has("uc_pk")) obj.get("uc_pk").asText() else "",
+        if (obj.has("uc_update_ts")) obj.get("uc_update_ts").asText() else "",
+        if (obj.has("uc_version")) obj.get("uc_version").asText() else "",
+        createdTS,
+        if (obj.has("uc_row_type")) obj.get("uc_row_type").asText() else "",
+        if (obj.has("uc_type")) obj.get("uc_type").asText() else "",
+        validDay,
+        validTS,
+        listingKey
+      )
+    }
+
+    val ohStream = env.addSource(kafkaOHConsumer).map(x => oHMapper(x))(rowOHType)
+
+    val ohTbl = tEnv.fromDataStream(ohStream,
+      'o_data,
+      'o_uc_pk,
+      'o_uc_update_ts,
+      'o_uc_version,
+      'o_uc_created_ts,
+      'o_uc_row_type,
+      'o_uc_type,
+      'o_uc_valid_day,
+      'o_uc_valid_ts,
+      'o_listing_key
+    )
+    tEnv.registerTable("oh_tbl", ohTbl)
+
+    // Table with latest open-house, and no duplicates
+    val ohTblTs = tEnv.sqlQuery("SELECT * FROM oh_tbl WHERE (o_uc_pk, o_uc_created_ts) IN (SELECT o_uc_pk, MAX(o_uc_created_ts) FROM oh_tbl GROUP BY o_uc_pk)")
+    tEnv.registerTable("oh_tbl_ts", ohTblTs)
+    //    val oHRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](ohTblTs)
+    //    oHRow.print()
+
+
+    val kafkaOfficeConsumer = new FlinkKafkaConsumer[ObjectNode](kafkaOfficeTopic, jsonDeserdeSchema, consumerProps)
+    kafkaOfficeConsumer.setStartFromEarliest()
+    val rowOfficeType = new RowTypeInfo(
+      Types.STRING, // data
+      Types.STRING, // uc_pk
+      Types.STRING, // uc_update_ts
+      Types.STRING, // uc_version
+      Types.LONG, // uc_created_ts
+      Types.STRING, // uc_row_type
+      Types.STRING, // uc_type
+      Types.LONG, // uc_valid_day
+      Types.LONG // uc_valid_ts
+    )
+
+    def officeMapper(record: ObjectNode): Row = {
+      val obj = record.get("value")
+      val createdTS: java.lang.Long = obj.get("uc_created_ts").asText().toLong
+      val validDay: java.lang.Long = obj.get("uc_valid_day").asText().toLong
+      val validTS: java.lang.Long = obj.get("uc_valid_ts").asText().toLong
+      return Row.of(
+        if (obj.has("data")) obj.get("data").asText() else "",
+        if (obj.has("uc_pk")) obj.get("uc_pk").asText() else "",
+        if (obj.has("uc_update_ts")) obj.get("uc_update_ts").asText() else "",
+        if (obj.has("uc_version")) obj.get("uc_version").asText() else "",
+        createdTS,
+        if (obj.has("uc_row_type")) obj.get("uc_row_type").asText() else "",
+        if (obj.has("uc_type")) obj.get("uc_type").asText() else "",
+        validDay,
+        validTS
+      )
+    }
+
+    val officeStream = env.addSource(kafkaOfficeConsumer).map(x => officeMapper(x))(rowOfficeType)
+    val officeTbl = tEnv.fromDataStream(officeStream,
+      'ofc_data,
+      'ofc_uc_pk,
+      'ofc_uc_update_ts,
+      'ofc_uc_version,
+      'ofc_uc_created_ts,
+      'ofc_uc_row_type,
+      'ofc_uc_type,
+      'ofc_uc_valid_day,
+      'ofc_uc_valid_ts
+    )
+    tEnv.registerTable("office_tbl", officeTbl)
+
+    // Table with latest office, and no duplicates
+    val officeTblTs = tEnv.sqlQuery("SELECT * FROM office_tbl WHERE (ofc_uc_pk, ofc_uc_created_ts) IN (SELECT ofc_uc_pk, MAX(ofc_uc_created_ts) FROM office_tbl GROUP BY ofc_uc_pk)")
+    tEnv.registerTable("office_tbl_ts", officeTblTs)
+    //    val ofcRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](officeTblTs)
+    //    ofcRow.print()
+
+
+
+        val leftJoinQuery2 =
+          """
+            | SELECT *
+            | FROM listings_tbl_ts l
+            | LEFT JOIN agents_tbl_ts aa ON l.l_list_agent_key = aa.a_uc_pk
+            | LEFT JOIN agents_tbl_ts ab ON l.l_buyer_agent_key = ab.a_uc_pk
+            | LEFT JOIN agents_tbl_ts ac ON l.l_co_list_agent_key = ac.a_uc_pk
+            | LEFT JOIN agents_tbl_ts ad ON l.l_co_buyer_agent_key = ad.a_uc_pk
+            | LEFT JOIN oh_tbl_ts oh ON l.l_listing_key = oh.o_listing_key
+            | LEFT JOIN office_tbl_ts oa ON l.l_list_office_key = oa.ofc_uc_pk
+            | LEFT JOIN office_tbl_ts ob ON l.l_buyer_office_key = ob.ofc_uc_pk
+            | LEFT JOIN office_tbl_ts oc ON l.l_co_list_office_key = oc.ofc_uc_pk
+            | LEFT JOIN office_tbl_ts od ON l.l_co_buyer_office_key = od.ofc_uc_pk
+            | """.stripMargin
+        val leftResult2 = tEnv.sqlQuery(leftJoinQuery2)
+        tEnv.registerTable("leftResult_tbl", leftResult2)
+        val leftJoinRow2: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](leftResult2)
+        println("### LEFT JOIN2 result")
+        leftJoinRow2.print()
+
+    //    val countTbl = tEnv.sqlQuery("SELECT COUNT(*) FROM leftResult_tbl")
+    //    val cRow: DataStream[(Boolean, Long)] = tEnv.toRetractStream[Long](countTbl)
+    //    println("### COUNT")
     // cRow.print()
 
     // Execute flow
