@@ -5,5 +5,7 @@
 --listings-topic la_crmls_rets-listings-neo \
 --agents-topic la_crmls_rets-agents-neo \
 --oh-topic la_crmls_rets-openhouses-neo \
---office-topic la_crmls_rets-offices-neo
+--office-topic la_crmls_rets-offices-neo \
+--media-topic la_crmls_rets-media-neo \
+--history-topic la_crmls_rets-history-neo
 

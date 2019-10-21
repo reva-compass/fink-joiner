@@ -33,12 +33,14 @@ object CRMLSJoiner {
     val kafkaOHTopic = params.getRequired("oh-topic")
     val kafkaOfficeTopic = params.getRequired("office-topic")
     val kafkaMediaTopic = params.getRequired("media-topic")
+    val kafkaHistoryTopic = params.getRequired("history-topic")
     println(("# bootstrapServers: " + bootstrapServers))
     println("# kafkaListingsTopic: " + kafkaListingsTopic)
     println("## kafkaAgentsTopic: " + kafkaAgentsTopic)
     println("## kafkaOHTopic: " + kafkaOHTopic)
     println("## kafkaOfficeTopic: " + kafkaOfficeTopic)
     println("## kafkaMediaTopic: " + kafkaMediaTopic)
+    println("## kafkaHistoryTopic: " + kafkaHistoryTopic)
 
     /*
      Set up environment
@@ -177,8 +179,8 @@ object CRMLSJoiner {
     // Table with latest listings, and no duplicates
     val listingsTblTs = tEnv.sqlQuery("SELECT * FROM listings_tbl WHERE (l_uc_pk, l_uc_created_ts) IN (SELECT l_uc_pk, MAX(l_uc_created_ts) FROM listings_tbl GROUP BY l_uc_pk)")
     tEnv.registerTable("listings_tbl_ts", listingsTblTs)
-//    val lRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](listingsTblTs)
-//    lRow.print()
+    //    val lRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](listingsTblTs)
+    //    lRow.print()
 
 
     val kafkaAgentsConsumer = new FlinkKafkaConsumer[ObjectNode](kafkaAgentsTopic, jsonDeserdeSchema, consumerProps)
@@ -346,29 +348,146 @@ object CRMLSJoiner {
     //    val ofcRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](officeTblTs)
     //    ofcRow.print()
 
+    val kafkaMediaConsumer = new FlinkKafkaConsumer[ObjectNode](kafkaMediaTopic, jsonDeserdeSchema, consumerProps)
+    kafkaMediaConsumer.setStartFromEarliest()
+    val rowMediaType = new RowTypeInfo(
+      Types.STRING, // data
+      Types.STRING, // uc_pk
+      Types.STRING, // uc_update_ts
+      Types.STRING, // uc_version
+      Types.LONG, // uc_created_ts
+      Types.STRING, // uc_row_type
+      Types.STRING, // uc_type
+      Types.LONG, // uc_valid_day
+      Types.LONG, // uc_valid_ts
+      Types.STRING // ResourceRecordKeyNumeric
+    )
+
+    def mediaMapper(record: ObjectNode): Row = {
+      val obj = record.get("value")
+      val da = obj.get("data").asText()
+      val dataNode = mapper.readValue[JsonNode](da, classOf[JsonNode])
+      val resourceRecordKey = if (dataNode.has("ResourceRecordKeyNumeric")) dataNode.get("ResourceRecordKeyNumeric").asText() else null
+      val createdTS: java.lang.Long = obj.get("uc_created_ts").asText().toLong
+      val validDay: java.lang.Long = obj.get("uc_valid_day").asText().toLong
+      val validTS: java.lang.Long = obj.get("uc_valid_ts").asText().toLong
+      return Row.of(
+        if (obj.has("data")) obj.get("data").asText() else "",
+        if (obj.has("uc_pk")) obj.get("uc_pk").asText() else "",
+        if (obj.has("uc_update_ts")) obj.get("uc_update_ts").asText() else "",
+        if (obj.has("uc_version")) obj.get("uc_version").asText() else "",
+        createdTS,
+        if (obj.has("uc_row_type")) obj.get("uc_row_type").asText() else "",
+        if (obj.has("uc_type")) obj.get("uc_type").asText() else "",
+        validDay,
+        validTS,
+        resourceRecordKey
+      )
+    }
+
+    val mediaStream = env.addSource(kafkaMediaConsumer).map(x => mediaMapper(x))(rowMediaType)
+    val mediaTbl = tEnv.fromDataStream(mediaStream,
+      'm_data,
+      'm_uc_pk,
+      'm_uc_update_ts,
+      'm_uc_version,
+      'm_uc_created_ts,
+      'm_uc_row_type,
+      'm_uc_type,
+      'm_uc_valid_day,
+      'm_uc_valid_ts,
+      'm_resource_record_key
+    )
+    tEnv.registerTable("media_tbl", mediaTbl)
+
+    // Table with latest media, and no duplicates
+    val mediaTblTs = tEnv.sqlQuery("SELECT * FROM media_tbl WHERE (m_uc_pk, m_uc_created_ts) IN (SELECT m_uc_pk, MAX(m_uc_created_ts) FROM media_tbl GROUP BY m_uc_pk)")
+    tEnv.registerTable("media_tbl_ts", mediaTblTs)
+//    val mRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](mediaTblTs)
+//    mRow.print()
+
+    val kafkaHistoryConsumer = new FlinkKafkaConsumer[ObjectNode](kafkaHistoryTopic, jsonDeserdeSchema, consumerProps)
+    kafkaHistoryConsumer.setStartFromEarliest()
+    val rowHistoryType = new RowTypeInfo(
+      Types.STRING, // data
+      Types.STRING, // uc_pk
+      Types.STRING, // uc_update_ts
+      Types.STRING, // uc_version
+      Types.LONG, // uc_created_ts
+      Types.STRING, // uc_row_type
+      Types.STRING, // uc_type
+      Types.LONG, // uc_valid_day
+      Types.LONG, // uc_valid_ts
+      Types.STRING // ResourceRecordKeyNumeric
+    )
+
+    def historyMapper(record: ObjectNode): Row = {
+      val obj = record.get("value")
+      val da = obj.get("data").asText()
+      val dataNode = mapper.readValue[JsonNode](da, classOf[JsonNode])
+      val resourceRecordKey = if (dataNode.has("ResourceRecordKeyNumeric")) dataNode.get("ResourceRecordKeyNumeric").asText() else null
+      val createdTS: java.lang.Long = obj.get("uc_created_ts").asText().toLong
+      val validDay: java.lang.Long = obj.get("uc_valid_day").asText().toLong
+      val validTS: java.lang.Long = obj.get("uc_valid_ts").asText().toLong
+      return Row.of(
+        if (obj.has("data")) obj.get("data").asText() else "",
+        if (obj.has("uc_pk")) obj.get("uc_pk").asText() else "",
+        if (obj.has("uc_update_ts")) obj.get("uc_update_ts").asText() else "",
+        if (obj.has("uc_version")) obj.get("uc_version").asText() else "",
+        createdTS,
+        if (obj.has("uc_row_type")) obj.get("uc_row_type").asText() else "",
+        if (obj.has("uc_type")) obj.get("uc_type").asText() else "",
+        validDay,
+        validTS,
+        resourceRecordKey
+      )
+    }
+
+    val historyStream = env.addSource(kafkaHistoryConsumer).map(x => historyMapper(x))(rowHistoryType)
+    val historyTbl = tEnv.fromDataStream(historyStream,
+      'h_data,
+      'h_uc_pk,
+      'h_uc_update_ts,
+      'h_uc_version,
+      'h_uc_created_ts,
+      'h_uc_row_type,
+      'h_uc_type,
+      'h_uc_valid_day,
+      'h_uc_valid_ts,
+      'h_resource_record_key
+    )
+    tEnv.registerTable("history_tbl", historyTbl)
+
+    // Table with latest history, and no duplicates
+    val historyTblTs = tEnv.sqlQuery("SELECT * FROM history_tbl WHERE (h_uc_pk, h_uc_created_ts) IN (SELECT h_uc_pk, MAX(h_uc_created_ts) FROM history_tbl GROUP BY h_uc_pk)")
+    tEnv.registerTable("history_tbl_ts", historyTblTs)
+//    val hRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](historyTblTs)
+//    hRow.print()
 
 
-        val leftJoinQuery2 =
-          """
-            | SELECT *
-            | FROM listings_tbl_ts l
-            | LEFT JOIN agents_tbl_ts aa ON l.l_list_agent_key = aa.a_uc_pk
-            | LEFT JOIN agents_tbl_ts ab ON l.l_buyer_agent_key = ab.a_uc_pk
-            | LEFT JOIN agents_tbl_ts ac ON l.l_co_list_agent_key = ac.a_uc_pk
-            | LEFT JOIN agents_tbl_ts ad ON l.l_co_buyer_agent_key = ad.a_uc_pk
-            | LEFT JOIN oh_tbl_ts oh ON l.l_listing_key = oh.o_listing_key
-            | LEFT JOIN office_tbl_ts oa ON l.l_list_office_key = oa.ofc_uc_pk
-            | LEFT JOIN office_tbl_ts ob ON l.l_buyer_office_key = ob.ofc_uc_pk
-            | LEFT JOIN office_tbl_ts oc ON l.l_co_list_office_key = oc.ofc_uc_pk
-            | LEFT JOIN office_tbl_ts od ON l.l_co_buyer_office_key = od.ofc_uc_pk
-            | """.stripMargin
-        val leftResult2 = tEnv.sqlQuery(leftJoinQuery2)
-        tEnv.registerTable("leftResult_tbl", leftResult2)
-        val leftJoinRow2: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](leftResult2)
-        println("### LEFT JOIN2 result")
-        leftJoinRow2.print()
+    val leftJoinQuery2 =
+      """
+        | SELECT *
+        | FROM listings_tbl_ts l
+        | LEFT JOIN agents_tbl_ts aa ON l.l_list_agent_key = aa.a_uc_pk
+        | LEFT JOIN agents_tbl_ts ab ON l.l_buyer_agent_key = ab.a_uc_pk
+        | LEFT JOIN agents_tbl_ts ac ON l.l_co_list_agent_key = ac.a_uc_pk
+        | LEFT JOIN agents_tbl_ts ad ON l.l_co_buyer_agent_key = ad.a_uc_pk
+        | LEFT JOIN oh_tbl_ts oh ON l.l_listing_key = oh.o_listing_key
+        | LEFT JOIN office_tbl_ts oa ON l.l_list_office_key = oa.ofc_uc_pk
+        | LEFT JOIN office_tbl_ts ob ON l.l_buyer_office_key = ob.ofc_uc_pk
+        | LEFT JOIN office_tbl_ts oc ON l.l_co_list_office_key = oc.ofc_uc_pk
+        | LEFT JOIN office_tbl_ts od ON l.l_co_buyer_office_key = od.ofc_uc_pk
+        | LEFT JOIN media_tbl_ts ma ON l.l_uc_pk = ma.m_resource_record_key
+        | LEFT JOIN history_tbl_ts ha ON l.l_uc_pk = ha.h_resource_record_key
+        | """.stripMargin
+    val leftResult2 = tEnv.sqlQuery(leftJoinQuery2)
+    tEnv.registerTable("leftResult_tbl", leftResult2)
+    val leftJoinRow2: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](leftResult2)
+    println("### LEFT JOIN2 result")
+//    leftJoinRow2.print()
 
-    //    val countTbl = tEnv.sqlQuery("SELECT COUNT(*) FROM leftResult_tbl")
+    //    val countTbl = tEnv.sqlQuery("SELECT COUNT(*) FROM leftResult_tbl")s
     //    val cRow: DataStream[(Boolean, Long)] = tEnv.toRetractStream[Long](countTbl)
     //    println("### COUNT")
     // cRow.print()
