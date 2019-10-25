@@ -27,6 +27,7 @@ object CRMLSJoiner {
      Checking input parameters
      */
     val params = ParameterTool.fromArgs(args)
+    val stateBackendPath = params.getRequired("state-path")
     val bootstrapServers = params.getRequired("bootstrap-server")
     val kafkaListingsTopic = params.getRequired("listings-topic")
     val kafkaAgentsTopic = params.getRequired("agents-topic")
@@ -34,6 +35,7 @@ object CRMLSJoiner {
     val kafkaOfficeTopic = params.getRequired("office-topic")
     val kafkaMediaTopic = params.getRequired("media-topic")
     val kafkaHistoryTopic = params.getRequired("history-topic")
+    println("# stateBackendPath: " + stateBackendPath)
     println(("# bootstrapServers: " + bootstrapServers))
     println("# kafkaListingsTopic: " + kafkaListingsTopic)
     println("## kafkaAgentsTopic: " + kafkaAgentsTopic)
@@ -52,10 +54,10 @@ object CRMLSJoiner {
     //    env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
 
 
-    val backend = new RocksDBStateBackend("file:///Users/rkandoji/Documents/Software/flink-1.8.1/statebackend", true)
+    val backend = new RocksDBStateBackend(stateBackendPath, true)
 
     env.setStateBackend(backend)
-    env.setParallelism(2)
+    //env.setParallelism(2)
 
     env.getConfig.enableForceAvro()
     env.getConfig.disableForceKryo()
@@ -290,7 +292,7 @@ object CRMLSJoiner {
     tEnv.registerTable("oh_tbl", ohTbl)
 
     // Table with latest open-house, and no duplicates
-    val ohTblTs = tEnv.sqlQuery("SELECT * FROM oh_tbl WHERE (o_uc_pk, o_uc_created_ts) IN (SELECT o_uc_pk, MAX(o_uc_created_ts) FROM oh_tbl GROUP BY o_uc_pk)")
+    val ohTblTs = tEnv.sqlQuery("SELECT * FROM oh_tbl WHERE (o_listing_key, o_uc_created_ts) IN (SELECT o_listing_key, MAX(o_uc_created_ts) FROM oh_tbl GROUP BY o_listing_key)")
     tEnv.registerTable("oh_tbl_ts", ohTblTs)
     //    val oHRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](ohTblTs)
     //    oHRow.print()
@@ -401,10 +403,11 @@ object CRMLSJoiner {
     tEnv.registerTable("media_tbl", mediaTbl)
 
     // Table with latest media, and no duplicates
-    val mediaTblTs = tEnv.sqlQuery("SELECT * FROM media_tbl WHERE (m_uc_pk, m_uc_created_ts) IN (SELECT m_uc_pk, MAX(m_uc_created_ts) FROM media_tbl GROUP BY m_uc_pk)")
+    val mediaTblTs = tEnv.sqlQuery("SELECT * FROM media_tbl WHERE (m_resource_record_key, m_uc_created_ts) IN (SELECT m_resource_record_key, MAX(m_uc_created_ts) FROM media_tbl GROUP BY m_resource_record_key)")
     tEnv.registerTable("media_tbl_ts", mediaTblTs)
-//    val mRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](mediaTblTs)
-//    mRow.print()
+    //   val mRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](mediaTblTs)
+    //    println("### media")
+    //    mRow.print()
 
     val kafkaHistoryConsumer = new FlinkKafkaConsumer[ObjectNode](kafkaHistoryTopic, jsonDeserdeSchema, consumerProps)
     kafkaHistoryConsumer.setStartFromEarliest()
@@ -459,10 +462,10 @@ object CRMLSJoiner {
     tEnv.registerTable("history_tbl", historyTbl)
 
     // Table with latest history, and no duplicates
-    val historyTblTs = tEnv.sqlQuery("SELECT * FROM history_tbl WHERE (h_uc_pk, h_uc_created_ts) IN (SELECT h_uc_pk, MAX(h_uc_created_ts) FROM history_tbl GROUP BY h_uc_pk)")
+    val historyTblTs = tEnv.sqlQuery("SELECT * FROM history_tbl WHERE (h_resource_record_key, h_uc_created_ts) IN (SELECT h_resource_record_key, MAX(h_uc_created_ts) FROM history_tbl GROUP BY h_resource_record_key)")
     tEnv.registerTable("history_tbl_ts", historyTblTs)
-//    val hRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](historyTblTs)
-//    hRow.print()
+    //    val hRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](historyTblTs)
+    //    hRow.print()
 
 
     val leftJoinQuery2 =
@@ -484,7 +487,7 @@ object CRMLSJoiner {
     val leftResult2 = tEnv.sqlQuery(leftJoinQuery2)
     tEnv.registerTable("leftResult_tbl", leftResult2)
     val leftJoinRow2: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](leftResult2)
-    println("### LEFT JOIN2 result")
+//    println("### LEFT JOIN2 result")
 //    leftJoinRow2.print()
 
     //    val countTbl = tEnv.sqlQuery("SELECT COUNT(*) FROM leftResult_tbl")s
