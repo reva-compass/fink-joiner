@@ -21,6 +21,7 @@ val flinkDependencies = Seq(
   "org.apache.flink" %% "flink-table-planner" % flinkVersion,
   "org.apache.flink" %% "flink-table-api-scala-bridge" % flinkVersion,
   "org.apache.flink" % "flink-avro" % flinkVersion,
+  "org.apache.flink" % "flink-statebackend-rocksdb_2.11" % flinkVersion,
   "com.sksamuel.avro4s" %% "avro4s-core" % "3.0.0-RC2"
 )
 
@@ -29,7 +30,7 @@ lazy val root = (project in file(".")).
     libraryDependencies ++= flinkDependencies
   )
 
-assembly / mainClass := Some("com.urbancompass.data.pipeline.flink.TestJoiner")
+assembly / mainClass := Some("com.urbancompass.data.pipeline.flink.CRMLSJoiner")
 
 // make run command include the provided dependencies
 Compile / run  := Defaults.runTask(Compile / fullClasspath,
