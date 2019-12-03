@@ -23,18 +23,31 @@ object CRMLSJoiner {
   def main(args: Array[String]) {
     println("### Entering CRMLSJoiner")
 
-    /*
-     Checking input parameters
-     */
-    val params = ParameterTool.fromArgs(args)
-    val stateBackendPath = params.getRequired("state-path")
-    val bootstrapServers = params.getRequired("bootstrap-server")
-    val kafkaListingsTopic = params.getRequired("listings-topic")
-    val kafkaAgentsTopic = params.getRequired("agents-topic")
-    val kafkaOHTopic = params.getRequired("oh-topic")
-    val kafkaOfficeTopic = params.getRequired("office-topic")
-    val kafkaMediaTopic = params.getRequired("media-topic")
-    val kafkaHistoryTopic = params.getRequired("history-topic")
+//    /*
+//     Checking input parameters
+//     */
+//    val params = ParameterTool.fromArgs(args)
+//    val stateBackendPath = params.getRequired("state-path")
+//    val bootstrapServers = params.getRequired("bootstrap-server")
+//    val kafkaListingsTopic = params.getRequired("listings-topic")
+//    val kafkaAgentsTopic = params.getRequired("agents-topic")
+//    val kafkaOHTopic = params.getRequired("oh-topic")
+//    val kafkaOfficeTopic = params.getRequired("office-topic")
+//    val kafkaMediaTopic = params.getRequired("media-topic")
+//    val kafkaHistoryTopic = params.getRequired("history-topic")
+
+    val stateBackendPath = "file:///Users/rkandoji/Documents/Software/flink-1.8.1/statebackend"
+    val bootstrapServers = "b-2.listings-infra-dev-191.lguuvv.c6.kafka.us-east-1.amazonaws.com:9092," +
+      "b-1.listings-infra-dev-191.lguuvv.c6.kafka.us-east-1.amazonaws.com:9092," +
+      "b-3.listings-infra-dev-191.lguuvv.c6.kafka.us-east-1.amazonaws.com:9092"
+    val kafkaListingsTopic = "la_crmls_rets-listings-neo"
+    val kafkaAgentsTopic = "la_crmls_rets-agents-neo"
+    val kafkaOHTopic = "la_crmls_rets-openhouses-neo"
+    val kafkaOfficeTopic = "la_crmls_rets-offices-neo"
+    val kafkaMediaTopic = "la_crmls_rets-media-neo"
+    val kafkaHistoryTopic = "la_crmls_rets-history-neo"
+
+
     println("# stateBackendPath: " + stateBackendPath)
     println(("# bootstrapServers: " + bootstrapServers))
     println("# kafkaListingsTopic: " + kafkaListingsTopic)
@@ -54,9 +67,9 @@ object CRMLSJoiner {
     //    env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime)
 
 
-    val backend = new RocksDBStateBackend(stateBackendPath, true)
-
-    env.setStateBackend(backend)
+//    val backend = new RocksDBStateBackend(stateBackendPath, true)
+//
+//    env.setStateBackend(backend)
     //env.setParallelism(2)
 
     env.getConfig.enableForceAvro()
@@ -487,8 +500,8 @@ object CRMLSJoiner {
     val leftResult2 = tEnv.sqlQuery(leftJoinQuery2)
     tEnv.registerTable("leftResult_tbl", leftResult2)
     val leftJoinRow2: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](leftResult2)
-//    println("### LEFT JOIN2 result")
-//    leftJoinRow2.print()
+    //    println("### LEFT JOIN2 result")
+    //    leftJoinRow2.print()
 
     //    val countTbl = tEnv.sqlQuery("SELECT COUNT(*) FROM leftResult_tbl")s
     //    val cRow: DataStream[(Boolean, Long)] = tEnv.toRetractStream[Long](countTbl)
