@@ -2,10 +2,13 @@ package com.urbancompass.data.pipeline.flink
 
 import java.util.Properties
 
+import org.apache.flink.api.common.functions.RichFlatMapFunction
 import org.apache.flink.api.common.serialization.SimpleStringSchema
+import org.apache.flink.api.common.state.{ValueState, ValueStateDescriptor}
 import org.apache.flink.api.java.typeutils.RowTypeInfo
 import org.apache.flink.api.java.utils.ParameterTool
 import org.apache.flink.api.scala._
+import org.apache.flink.configuration.Configuration
 import org.apache.flink.runtime.state.filesystem.FsStateBackend
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.node.ObjectNode
 import org.apache.flink.streaming.api.TimeCharacteristic
@@ -15,6 +18,7 @@ import org.apache.flink.streaming.util.serialization.JSONKeyValueDeserialization
 import org.apache.flink.table.api.Types
 import org.apache.flink.table.api.scala._
 import org.apache.flink.types.Row
+import org.apache.flink.util.Collector
 
 object TestJoiner {
 
@@ -54,7 +58,6 @@ object TestJoiner {
     val kafkaListingsTopic = params.getRequired("listings-topic")
     val kafkaAgentsTopic = params.getRequired("agents-topic")
     val kafkaOHTopic = params.getRequired("oh-topic")
-    //val kafkaJoinedTopic = params.getRequired("sink-topic")
 
     /*
      Set up environment
@@ -125,7 +128,7 @@ object TestJoiner {
 
 
     val listingsStream = env.addSource(kafkaListingsConsumer).map(x => listingMapper(x))(rowListingType)
-    val keyedListingStream = listingsStream.keyBy(0)
+    val keyedListingStream = listingsStream.keyBy[String](value => value.getField(0).toString).flatMap(new CountWindowAverage())
     val listingsTbl = tEnv.fromDataStream(keyedListingStream,
       'listing_id,
       'earnest_$_payable_to,
@@ -142,17 +145,16 @@ object TestJoiner {
       'listing_timestamp
     )
     tEnv.registerTable("listings_tbl", listingsTbl)
-
-    //    val resListings = tEnv.sqlQuery("SELECT * from listings_tbl")
-    //    val lRow: DataStream[Row] = tEnv.toAppendStream[Row](resListings)
-    //    lRow.print()
-
+    val resListings = tEnv.sqlQuery("SELECT * from listings_tbl")
+    tEnv.registerTable("res_listings", resListings)
+    val lRow2: DataStream[Row] = tEnv.toAppendStream[Row](resListings)
+    lRow2.print()
 
     // Table with latest listings, and no duplicates
-    val listingsTblTs = tEnv.sqlQuery("SELECT * FROM listings_tbl WHERE (listing_id, listing_timestamp) IN (SELECT listing_id, MAX(listing_timestamp) FROM listings_tbl GROUP BY listing_id)")
-    tEnv.registerTable("listings_tbl_ts", listingsTblTs)
-//    val lRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](listingsTblTs)
-//    lRow.print()
+    //        val listingsTblTs = tEnv.sqlQuery("SELECT * FROM listings_tbl WHERE (listing_id, listing_timestamp) IN (SELECT listing_id, MAX(listing_timestamp) FROM listings_tbl GROUP BY listing_id)")
+    //        tEnv.registerTable("listings_tbl_ts", listingsTblTs)
+    //        val lRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](listingsTblTs)
+    //        lRow.print()
 
 
     val rowAgentType = new RowTypeInfo(
@@ -248,8 +250,8 @@ object TestJoiner {
     // Table with latest open-house, and no duplicates
     val ohTblTs = tEnv.sqlQuery("SELECT * FROM oh_tbl WHERE (oh_event_unique_id, oh_timestamp) IN (SELECT oh_event_unique_id, MAX(oh_timestamp) FROM oh_tbl GROUP BY oh_event_unique_id)")
     tEnv.registerTable("oh_tbl_ts", ohTblTs)
-//    val oHRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](ohTblTs)
-//    oHRow.print()
+    //    val oHRow: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](ohTblTs)
+    //    oHRow.print()
 
     //
     //        val joinQuery =
@@ -295,18 +297,18 @@ object TestJoiner {
     //        println("### LEFT JOIN2 result")
     //        leftJoinRow2.print()
 
-        val leftJoinQuery2 =
-          """
-            | SELECT *
-            | FROM listings_tbl_ts l
-            | LEFT JOIN agents_tbl_ts aa ON l.l_agent_id = aa.agent_id
-            | LEFT JOIN agents_tbl_ts ab ON l.l_colist_agent_id = ab.agent_id
-            | LEFT JOIN oh_tbl_ts AS oh ON l.listing_id = oh.oh_listing_id
-            | """.stripMargin
-        val leftResult2 = tEnv.sqlQuery(leftJoinQuery2)
-        val leftJoinRow2: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](leftResult2)
-        println("### LEFT JOIN2 result")
-        leftJoinRow2.print()
+    //        val leftJoinQuery2 =
+    //          """
+    //            | SELECT *
+    //            | FROM listings_tbl_ts l
+    //            | LEFT JOIN agents_tbl_ts aa ON l.l_agent_id = aa.agent_id
+    //            | LEFT JOIN agents_tbl_ts ab ON l.l_colist_agent_id = ab.agent_id
+    //            | LEFT JOIN oh_tbl_ts AS oh ON l.listing_id = oh.oh_listing_id
+    //            | """.stripMargin
+    //        val leftResult2 = tEnv.sqlQuery(leftJoinQuery2)
+    //        val leftJoinRow2: DataStream[(Boolean, Row)] = tEnv.toRetractStream[Row](leftResult2)
+    //        println("### LEFT JOIN2 result")
+    //        leftJoinRow2.print()
 
     //    val nestedJoinQuery =
     //      """
@@ -349,4 +351,42 @@ object TestJoiner {
 
   }
 }
+
+class CountWindowAverage extends RichFlatMapFunction[String, String] {
+
+  private var sum: ValueState[String] = _
+
+  override def flatMap(input: String, out: Collector[String]): Unit = {
+
+    // access the state value
+    val tmpCurrentSum = sum.value
+    println("### sum" + tmpCurrentSum)
+
+    //    // If it hasn't been used before, it will be null
+    //    val currentSum = if (tmpCurrentSum != null) {
+    //      tmpCurrentSum
+    //    } else {
+    //      (0L, 0L)
+    //    }
+    //
+    //    // update the count
+    //    val newSum = (currentSum._1 + 1, currentSum._2 + input._2)
+    //
+    //    // update the state
+    //    sum.update(newSum)
+    //
+    //    // if the count reaches 2, emit the average and clear the state
+    //    if (newSum._1 >= 2) {
+    //      out.collect((input._1, newSum._2 / newSum._1))
+    //      sum.clear()
+    //    }
+  }
+
+  override def open(parameters: Configuration): Unit = {
+    sum = getRuntimeContext.getState(
+      new ValueStateDescriptor[String]("average", createTypeInformation[String])
+    )
+  }
+}
+
 
