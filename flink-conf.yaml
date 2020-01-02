@@ -260,3 +260,16 @@ rest.port: 8082
 # Interval in milliseconds for refreshing the monitored directories.
 #historyserver.archive.fs.refresh-interval: 10000
 
+
+### rkandoji
+### conf changes on CTI
+# jobmanager.heap.size: 50000m
+# taskmanager.heap.size: 50000m
+# taskmanager.numberOfTaskSlots: 32
+# parallelism.default: 32
+### network buffer stuff	
+# taskmanager.network.memory.fraction: 0.1	
+# taskmanager.network.memory.min: 10000m	
+# taskmanager.network.memory.max: 10000m
+# rest.port: 8082
+
